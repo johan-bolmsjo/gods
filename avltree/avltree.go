@@ -1,103 +1,78 @@
-// Based on code originally written by:
-// Julienne Walker, http://eternallyconfuzzled.com
+// Based on code originally written by Julienne Walker in the public domain,
+// https://web.archive.org/web/20070212102708/http://eternallyconfuzzled.com/tuts/datastructures/jsw_tut_avl.aspx
 
 package avltree
 
 import (
-	"github.com/johan-bolmsjo/gods/list"
 	"sync"
+
+	"github.com/johan-bolmsjo/gods/v2/list"
+	"github.com/johan-bolmsjo/gods/v2/math"
 )
 
-// Data stored in the tree.
-type Data interface{}
+// Maximum tree height supported by a tree.
+// This is a *large* tree, larger than reasonable.
+const maxTreeHeight = 48
 
-// Key of data stored in the tree.
-type Key interface{}
-
-// GetKey obtains the key from data stored in the tree.
-type GetKey func(Data) Key
-
-// CmpKey compares two keys and return a value less than, equal to, or greater
-// than zero if lhs is found, respectively, to be less than, to match, or be
-// greater than rhs.
-type CmpKey func(lhs, rhs Key) int
-
-const maxTreeHeight = 36
+/******************************************************************************
+ * Tree
+ *****************************************************************************/
 
 // Tree is an AVL tree.
-type Tree struct {
-	root   *node
-	elems  int // Number of elements in tree
-	getKey GetKey
-	cmpKey CmpKey
-	iters  list.Elem
+type Tree[K any, V any] struct {
+	root        *node[K, V]
+	length      int
+	nodePool    *nodePool[K, V]
+	compareKeys math.Comparator[K]
+	iters       list.Node[*Iterator[K, V]]
 }
 
-// Iter is an iterator handle used to iterate over data stored in the tree.
-type Iter struct {
-	elem   list.Elem            // List element to make it linkable to tree iterator list
-	tree   *Tree                // Tree iterator belongs to
-	curr   *node                // Current node
-	path   [maxTreeHeight]*node // Traversal path
-	top    int                  // Top of stack
-	dir    direction            // Direction of movement
-	update bool                 // Update path before moving
-}
-
-// Scanner wraps an iterator and provides an API that is more convenient to use
-// with Go's limited form of while loops.
-type Scanner struct {
-	iter *Iter
-	data Data
-}
-
-type node struct {
-	balance int      // Balance factor
-	link    [2]*node //Left and right links.
-	data    Data
-}
-
-// *** Tree ***
-
-// New creates an AVL tree using the supplied getKey and cmpKey functions.
-func New(getKey GetKey, cmpKey CmpKey) *Tree {
-	tree := &Tree{
-		getKey: getKey,
-		cmpKey: cmpKey,
+// New creates an AVL tree using the supplied compare function and tree options.
+// Avoid using pointer keys that are dereferenced by the compare function as
+// modifying such keys outside of the tree invalidates the ordering invariant of
+// the tree.
+func New[K any, V any](compareKeys math.Comparator[K], options ...TreeOption[K, V]) *Tree[K, V] {
+	tree := &Tree[K, V]{
+		compareKeys: compareKeys,
 	}
-	tree.iters.Init(nil)
+	for _, option := range options {
+		option(tree)
+	}
+	tree.iters.InitLinks()
 	return tree
 }
 
-// Insert data into tree.
-// Returns inserted data and true or existing data associated with getKey(data) and false.
-func (tree *Tree) Insert(data Data) (Data, bool) {
+// Add association between key and value to the tree. Any existing association
+// for key is overwritten with key and value.
+func (tree *Tree[K, V]) Add(key K, value V) {
 	// Empty tree case
 	if tree.root == nil {
-		tree.root = newNode(data)
-		tree.elems++
-		return data, true
+		tree.root = tree.nodePool.get()
+		tree.root.key = key
+		tree.root.value = value
+		tree.length++
+		return
 	}
 
-	key := tree.getKey(data)
-
 	// Set up false tree root to ease maintenance
-	var head node
+	var head node[K, V]
 	t := &head
 	t.link[directionRight] = tree.root
 
 	var dir direction
-	var s *node    // Place to rebalance and parent
-	var p, q *node // Iterator and save pointer
+	var s *node[K, V]    // Place to rebalance and parent
+	var p, q *node[K, V] // Iterator and save pointer
 
 	// Search down the tree, saving rebalance points
 	for s, p = t.link[directionRight], t.link[directionRight]; ; p = q {
-		cmp := tree.cmpKey(tree.getKey(p.data), key)
+		cmp := tree.compareKeys(p.key, key)
 		if cmp == 0 {
-			return p.data, false
+			// Update association
+			p.key, p.value = key, value
+			return
 		}
 
-		dir = directionFromBool(cmp < 0)
+		dir = directionOfBool(cmp < 0)
 		if q = p.link[dir]; q == nil {
 			break
 		}
@@ -108,20 +83,21 @@ func (tree *Tree) Insert(data Data) (Data, bool) {
 		}
 	}
 
-	q = newNode(data)
+	q = tree.nodePool.get()
+	q.key, q.value = key, value
 	p.link[dir] = q
 
 	// Update balance factors
 	for p = s; p != q; p = p.link[dir] {
-		dir = directionFromBool(tree.cmpKey(tree.getKey(p.data), key) < 0)
+		dir = directionOfBool(tree.compareKeys(p.key, key) < 0)
 		p.balance += dir.balance()
 	}
 
 	q = s // Save rebalance point for parent fix
 
 	// Rebalance if necessary
-	if iabs(s.balance) > 1 {
-		dir = directionFromBool(tree.cmpKey(tree.getKey(s.data), key) < 0)
+	if math.AbsSigned(s.balance) > 1 {
+		dir = directionOfBool(tree.compareKeys(s.key, key) < 0)
 		s = s.insertBalance(dir)
 	}
 
@@ -129,44 +105,42 @@ func (tree *Tree) Insert(data Data) (Data, bool) {
 	if q == head.link[directionRight] {
 		tree.root = s
 	} else {
-		t.link[directionFromBool(q == t.link[directionRight])] = s
+		t.link[directionOfBool(q == t.link[directionRight])] = s
 	}
 
 	// Mark all iterators for path update
 	for e := tree.iters.Next(); e != &tree.iters; e = e.Next() {
-		iter := e.Value.(*Iter)
+		iter := e.Value
 		iter.update = true
 	}
 
-	tree.elems++
-	return data, true
+	tree.length++
 }
 
-// Remove data associated with key from tree.
-// Returns the removed data or nil if none found.
-func (tree *Tree) Remove(key Key) Data {
+// Remove any association with key from tree.
+func (tree *Tree[K, V]) Remove(key K) {
 	if tree.root == nil {
-		return nil
+		return
 	}
 
 	curr := tree.root
-	var up [maxTreeHeight]*node
+	var up [maxTreeHeight]*node[K, V]
 	var upd [maxTreeHeight]direction
 	var top int
 
 	// Search down tree and save path
 	for {
 		if curr == nil {
-			return nil
+			return
 		}
 
-		cmp := tree.cmpKey(tree.getKey(curr.data), key)
+		cmp := tree.compareKeys(curr.key, key)
 		if cmp == 0 {
 			break
 		}
 
 		// Push direction and node onto stack
-		upd[top] = directionFromBool(cmp < 0)
+		upd[top] = directionOfBool(cmp < 0)
 		up[top] = curr
 		top++
 
@@ -176,7 +150,7 @@ func (tree *Tree) Remove(key Key) Data {
 	// Remove the node
 	if curr.link[directionLeft] == nil || curr.link[directionRight] == nil {
 		// Which child is non-nil?
-		dir := directionFromBool(curr.link[directionLeft] == nil)
+		dir := directionOfBool(curr.link[directionLeft] == nil)
 
 		// Fix parent
 		if top != 0 {
@@ -200,13 +174,13 @@ func (tree *Tree) Remove(key Key) Data {
 			heir = heir.link[directionLeft]
 		}
 
-		// Swap data
-		t := curr.data
-		curr.data = heir.data
-		heir.data = t
+		// Swap associations
+		tmpKey, tmpValue := curr.key, curr.value
+		curr.key, curr.value = heir.key, heir.value
+		heir.key, heir.value = tmpKey, tmpValue
 
 		// Unlink successor and fix parent
-		up[top-1].link[directionFromBool(up[top-1] == curr)] = heir.link[directionRight]
+		up[top-1].link[directionOfBool(up[top-1] == curr)] = heir.link[directionRight]
 		curr = heir
 	}
 
@@ -218,9 +192,9 @@ func (tree *Tree) Remove(key Key) Data {
 		up[top].balance += upd[top].inverseBalance()
 
 		// Terminate or rebalance as necessary
-		if iabs(up[top].balance) == 1 {
+		if math.AbsSigned(up[top].balance) == 1 {
 			break
-		} else if iabs(up[top].balance) > 1 {
+		} else if math.AbsSigned(up[top].balance) > 1 {
 			up[top], done = up[top].removeBalance(upd[top])
 
 			// Fix parent
@@ -234,7 +208,7 @@ func (tree *Tree) Remove(key Key) Data {
 
 	// Update iterators
 	for e := tree.iters.Next(); e != &tree.iters; e = e.Next() {
-		iter := e.Value.(*Iter)
+		iter := e.Value
 
 		// All iterators need their path updated
 		iter.update = true
@@ -242,181 +216,178 @@ func (tree *Tree) Remove(key Key) Data {
 		// Iterators positioned on the removed node need update performed now
 		if iter.curr == curr {
 			iter.update = false
-			if iter.buildPathNext() == nil {
+			if !iter.buildPathNext() {
 				// This one fell of the edge
 				e = e.Prev()
-				iter.Cancel()
+				iter.Close()
 			}
 		}
 	}
 
-	data := curr.data
-	curr.release(nil)
-	tree.elems--
-	return data
+	tree.nodePool.put(curr, nil)
+	tree.length--
 }
 
-// Clear removes all data from the tree and invalidates all iterators.
-// The releaseData function (if non nil) is called on removed data.
-func (tree *Tree) Clear(releaseData func(Data)) {
+// Clear removes all associations from the tree and invalidates all iterators. A
+// non-nil release function is called on each association in the tree. The
+// release function must not fail. Remove each association by itself (for
+// example by using an iterator) if it can fail and handle errors properly.
+func (tree *Tree[K, V]) Clear(release func(K, V)) {
 	curr := tree.root
 
 	// Destruction by rotation
 	for curr != nil {
-		var save *node
+		var save *node[K, V]
 
 		if curr.link[directionLeft] == nil {
 			// Remove node
 			save = curr.link[directionRight]
-			curr.release(releaseData)
+			tree.nodePool.put(curr, release)
 		} else {
 			// Rotate right
 			save = curr.link[directionLeft]
 			curr.link[directionLeft] = save.link[directionRight]
 			save.link[directionRight] = curr
 		}
-
 		curr = save
 	}
 
 	tree.root = nil
-	tree.elems = 0
+	tree.length = 0
 
 	for tree.iters.IsLinked() {
-		tree.iters.Next().Value.(*Iter).Cancel()
+		tree.iters.Next().Value.Close()
 	}
 }
 
-// Len returns the number of elements in the tree.
-func (tree *Tree) Len() int {
-	return tree.elems
+// Length returns the number of associations in the tree.
+func (tree *Tree[K, V]) Length() int {
+	return tree.length
 }
 
-// Find data associated with key.
-// Returns found data or nil.
-func (tree *Tree) Find(key Key) Data {
+// Find value associated with key. Returns the found value and true or the zero
+// value of V and false if no assocation was found.
+func (tree *Tree[K, V]) Find(key K) (V, bool) {
 	curr := tree.root
-
 	for curr != nil {
-		cmp := tree.cmpKey(tree.getKey(curr.data), key)
+		cmp := tree.compareKeys(curr.key, key)
 		if cmp == 0 {
 			break
 		}
-		curr = curr.link[directionFromBool(cmp < 0)]
+		curr = curr.link[directionOfBool(cmp < 0)]
 	}
-
 	if curr != nil {
-		return curr.data
+		return curr.value, true
 	}
-	return nil
+	return zeroValue[V]()
 }
 
-// Find data associated with key or data whose key is immediately lesser.
-// Returns found data or nil.
-func (tree *Tree) FindLe(key Key) Data {
-	curr := tree.root
-	var lesser *node
+// FindEqualOrLesser returns the association that match key or the association
+// with the immediately lesser key and true. The zero values of K and V and
+// false is returned if no assocation was found.
+func (tree *Tree[K, V]) FindEqualOrLesser(key K) (K, V, bool) {
+	var lesser *node[K, V]
 
+	curr := tree.root
 	for curr != nil {
-		cmp := tree.cmpKey(tree.getKey(curr.data), key)
+		cmp := tree.compareKeys(curr.key, key)
 		if cmp == 0 {
 			break
 		}
 		if cmp < 0 {
 			lesser = curr
 		}
-		curr = curr.link[directionFromBool(cmp < 0)]
+		curr = curr.link[directionOfBool(cmp < 0)]
 	}
-
 	if curr != nil {
-		return curr.data
+		return curr.key, curr.value, true
 	} else if lesser != nil {
-		return lesser.data
+		return lesser.key, lesser.value, true
 	}
-	return nil
+	return zeroAssoc[K, V]()
 }
 
-// Find data associated with key or data whose key is immediately greater.
-// Returns found data or nil.
-func (tree *Tree) FindGe(key Key) Data {
-	curr := tree.root
-	var greater *node
+// FindEqualOrGreater returns the association that match key or the immediately
+// greater association and true. The zero values of K and V and false is
+// returned if no assocation was found.
+func (tree *Tree[K, V]) FindEqualOrGreater(key K) (K, V, bool) {
+	var greater *node[K, V]
 
+	curr := tree.root
 	for curr != nil {
-		cmp := tree.cmpKey(tree.getKey(curr.data), key)
+		cmp := tree.compareKeys(curr.key, key)
 		if cmp == 0 {
 			break
 		}
 		if cmp > 0 {
 			greater = curr
 		}
-		curr = curr.link[directionFromBool(cmp < 0)]
+		curr = curr.link[directionOfBool(cmp < 0)]
 	}
-
 	if curr != nil {
-		return curr.data
+		return curr.key, curr.value, true
 	} else if greater != nil {
-		return greater.data
+		return greater.key, greater.value, true
 	}
-	return nil
+	return zeroAssoc[K, V]()
 }
 
-// Front returns the data of the leftmost element in the tree or nil if tree is empty.
-func (tree *Tree) Front() Data {
+// FindLowest returns the association with the lowest key and true. The zero value
+// of K and V and false is returned if the tree is empty.
+func (tree *Tree[K, V]) FindLowest() (K, V, bool) {
 	return tree.edgeNode(directionLeft)
 }
 
-// Back returns the data of the rightmost element in the tree or nil if tree is empty.
-func (tree *Tree) Back() Data {
+// FindHighest returns the association with the highest key and true. The zero value
+// of K and V and false is returned if the tree is empty.
+func (tree *Tree[K, V]) FindHighest() (K, V, bool) {
 	return tree.edgeNode(directionRight)
 }
 
-// Apply calls the given function on all data stored in the tree.
-func (tree *Tree) Apply(f func(data Data)) {
-	s := NewScanner(tree.Iterate())
-	for s.Scan() {
-		f(s.Data())
+// Apply calls the supplied function for each association in the tree.
+func (tree *Tree[K, V]) Apply(f func(K, V)) {
+	iter := tree.NewIterator()
+	for k, v, ok := iter.Next(); ok; k, v, ok = iter.Next() {
+		f(k, v)
 	}
 }
 
-// Iterate creates an iterator positioned on the leftmost element in the tree.
-// The iterator will move to the right when advanced.
-func (tree *Tree) Iterate() *Iter {
-	return tree.iterate(directionRight)
+// NewIterator creates an iterator that advances from low to high key values.
+// Make sure to close the iterator by calling its Close method when done.
+func (tree *Tree[K, V]) NewIterator() *Iterator[K, V] {
+	return tree.iterator(directionRight)
 }
 
-// Iterate creates an iterator positioned on the rightmost element in the tree.
-// The iterator will move to the left when advanced.
-func (tree *Tree) IterateReverse() *Iter {
-	return tree.iterate(directionLeft)
+// NewReverseIterator creates an iterator that advances from high to low key
+// values. Make sure to close the iterator by calling its Close method when
+// done.
+func (tree *Tree[K, V]) NewReverseIterator() *Iterator[K, V] {
+	return tree.iterator(directionLeft)
 }
 
-func (tree *Tree) edgeNode(dir direction) Data {
+func (tree *Tree[K, V]) edgeNode(dir direction) (K, V, bool) {
 	node := tree.root
 	if node == nil {
-		return nil
+		return zeroAssoc[K, V]()
 	}
-
 	for node.link[dir] != nil {
 		node = node.link[dir]
 	}
-
-	return node.data
+	return node.key, node.value, true
 }
 
-func (tree *Tree) iterate(dir direction) *Iter {
-	iter := &Iter{tree: tree, dir: dir}
-	iter.elem.Init(iter)
+func (tree *Tree[K, V]) iterator(dir direction) *Iterator[K, V] {
+	iter := &Iterator[K, V]{tree: tree, dir: dir}
+	iter.listNode.InitLinks().Value = iter
 
-	if iter.buildPathStart() != nil {
-		tree.iters.LinkNext(&iter.elem)
+	if iter.buildPathStart() {
+		tree.iters.LinkNext(&iter.listNode)
 	}
 	return iter
 }
 
-// Validate tree invariants.
-// A valid tree should always be balanced and sorted.
-func (tree *Tree) Validate() (balanced, sorted bool) {
+// Validate tree invariants. A valid tree should always be balanced and sorted.
+func (tree *Tree[K, V]) Validate() (balanced, sorted bool) {
 	balanced = true
 	sorted = true
 
@@ -426,7 +397,7 @@ func (tree *Tree) Validate() (balanced, sorted bool) {
 	return
 }
 
-func (tree *Tree) validateNode(node *node, rvBalanced, rvSorted *bool, depth int) int {
+func (tree *Tree[K, V]) validateNode(node *node[K, V], rvBalanced, rvSorted *bool, depth int) int {
 	depth++
 	var depthLink [2]int
 
@@ -434,35 +405,43 @@ func (tree *Tree) validateNode(node *node, rvBalanced, rvSorted *bool, depth int
 		depthLink[dir] = depth
 
 		if node.link[dir] != nil {
-			cmp := tree.cmpKey(tree.getKey(node.link[dir].data), tree.getKey(node.data))
-			if dir == directionFromBool(cmp < 0) {
+			cmp := tree.compareKeys(node.link[dir].key, node.key)
+			if dir == directionOfBool(cmp < 0) {
 				*rvSorted = false
 			}
 			depthLink[dir] = tree.validateNode(node.link[dir], rvBalanced, rvSorted, depth)
 		}
 	}
 
-	if iabs(depthLink[directionLeft]-depthLink[directionRight]) > 1 {
+	if math.AbsSigned(depthLink[directionLeft]-depthLink[directionRight]) > 1 {
 		*rvBalanced = false
 	}
 
-	return imax(depthLink[directionLeft], depthLink[directionRight])
+	return math.MaxInteger(depthLink[directionLeft], depthLink[directionRight])
 }
 
-// *** Iterators ***
+/******************************************************************************
+ * Iterator
+ *****************************************************************************/
 
-// Data returns the data of the element the iterator is positioned on.
-func (iter *Iter) Data() Data {
-	if !iter.elem.IsLinked() {
-		return nil
-	}
-	return iter.curr.data
+// Iterator that is used to iterate over associations in a tree.
+type Iterator[K any, V any] struct {
+	listNode list.Node[*Iterator[K, V]] // List node to make it linkable to tree iterator list
+	tree     *Tree[K, V]                // Tree iterator belongs to
+	curr     *node[K, V]                // Current node
+	path     [maxTreeHeight]*node[K, V] // Traversal path
+	top      int                        // Top of stack
+	dir      direction                  // Direction of movement
+	update   bool                       // Update path before moving
 }
 
-// Next returns the data of the element the iterator is positioned on and advance it.
-func (iter *Iter) Next() Data {
-	if !iter.elem.IsLinked() {
-		return nil
+// Next returns the next association from the iterator. The zero values of K and
+// V and false is returned if the iterator is not positioned on any association
+// (such as when all associations has been visited). Close has been called when
+// false is returned.
+func (iter *Iterator[K, V]) Next() (K, V, bool) {
+	if !iter.listNode.IsLinked() {
+		return zeroAssoc[K, V]()
 	}
 
 	if iter.update {
@@ -470,29 +449,29 @@ func (iter *Iter) Next() Data {
 		iter.update = false
 	}
 
-	data := iter.curr.data
-	if iter.advance() == nil {
-		iter.Cancel()
+	key, value := iter.curr.key, iter.curr.value
+	if !iter.advance() {
+		iter.Close()
 	}
-	return data
+	return key, value, true
 }
 
-// Cancel invalidates the iterator and removes its reference from the tree it's associated with.
-// Cancel is automatically called for iterators that iterate over the full range of a tree.
-func (iter *Iter) Cancel() {
-	iter.elem.Unlink()
+// Close invalidates the iterator and removes its reference from the tree it's
+// associated with. It's safe to call the Next method on closed iterators.
+func (iter *Iterator[K, V]) Close() {
+	iter.listNode.Unlink()
 
 	// Clear pointers to avoid GC memory leaks.
 	iter.tree = nil
 	iter.curr = nil
-
 	for i := range iter.path {
 		iter.path[i] = nil
 	}
 }
 
-// Move iterator according to iterator direction.
-func (iter *Iter) advance() Data {
+// Move iterator according to its recorded direction and report whether it fell
+// over the edge.
+func (iter *Iterator[K, V]) advance() bool {
 	dir := iter.dir
 
 	if iter.curr.link[dir] != nil {
@@ -508,7 +487,7 @@ func (iter *Iter) advance() Data {
 		}
 	} else {
 		// Move to the next branch
-		var last *node
+		var last *node[K, V]
 
 		for {
 			if iter.top == 0 {
@@ -526,14 +505,12 @@ func (iter *Iter) advance() Data {
 		}
 	}
 
-	if iter.curr != nil {
-		return iter.curr.data
-	}
-	return nil
+	return iter.curr != nil
 }
 
-// Build path to first or last entry depending on iterator direction.
-func (iter *Iter) buildPathStart() Data {
+// Build path to first or last association depending on iterator direction and
+// report if it was successful.
+func (iter *Iterator[K, V]) buildPathStart() bool {
 	dir := iter.dir.other()
 
 	iter.curr = iter.tree.root
@@ -545,41 +522,39 @@ func (iter *Iter) buildPathStart() Data {
 			iter.curr = iter.curr.link[dir]
 			iter.top++
 		}
-		return iter.curr.data
+		return true
 	}
-	return nil
+	return false
 }
 
 // Build path to current node (should always be in tree).
-func (iter *Iter) buildPathCurr() {
+func (iter *Iterator[K, V]) buildPathCurr() {
 	tree := iter.tree
-	key := tree.getKey(iter.curr.data)
+	key := iter.curr.key
 
 	iter.curr = tree.root
 	iter.top = 0
 
-	cmp := tree.cmpKey(tree.getKey(iter.curr.data), key)
-	for cmp != 0 {
+	for cmp := tree.compareKeys(iter.curr.key, key); cmp != 0; cmp = tree.compareKeys(iter.curr.key, key) {
 		iter.path[iter.top] = iter.curr
-		iter.curr = iter.curr.link[directionFromBool(cmp < 0)]
+		iter.curr = iter.curr.link[directionOfBool(cmp < 0)]
 		iter.top++
-
-		cmp = tree.cmpKey(tree.getKey(iter.curr.data), key)
 	}
 }
 
-// Build path to node next to current node.
-func (iter *Iter) buildPathNext() Data {
+// Build path to node next to current node and report whether it fell over the
+// edge.
+func (iter *Iterator[K, V]) buildPathNext() bool {
 	tree := iter.tree
-	key := tree.getKey(iter.curr.data)
+	key := iter.curr.key
 
-	var match *node
+	var match *node[K, V]
 
 	iter.curr = tree.root
 	iter.top = 0
 
 	for iter.curr != nil {
-		dir := directionFromBool(tree.cmpKey(tree.getKey(iter.curr.data), key) < 0)
+		dir := directionOfBool(tree.compareKeys(iter.curr.key, key) < 0)
 		if dir != iter.dir {
 			// This node matched the direction criteria.
 			match = iter.curr
@@ -595,60 +570,41 @@ func (iter *Iter) buildPathNext() Data {
 			iter.top--
 			iter.curr = iter.path[iter.top]
 		}
-		return match.data
+		return true
 	}
-	return nil
+	return false
 }
 
-// *** Scanner ***
+/******************************************************************************
+ * Tree Options
+ *****************************************************************************/
 
-// NewScanner wraps an iterator and provides an alternative iterator API.
-func NewScanner(iter *Iter) *Scanner {
-	return &Scanner{iter: iter}
-}
+type TreeOption[K any, V any] func(*Tree[K, V])
 
-// Scan fetch the next value from the wrapped iterator and saves it internally.
-// The function reports whether a value was obtained from the iterator which can
-// then be read out using the Data method.
-func (s *Scanner) Scan() bool {
-	s.data = s.iter.Next()
-	return s.data != nil
-}
-
-// Data returns the saved value from the Scan method.
-func (scanner *Scanner) Data() Data {
-	return scanner.data
-}
-
-// *** node ***
-
-func newNode(data Data) *node {
-	node := nodePool.Get().(*node)
-	node.data = data
-	return node
-}
-
-var nodePool = sync.Pool{New: func() interface{} { return new(node) }}
-
-func (node *node) release(releaseData func(Data)) {
-	if releaseData != nil {
-		releaseData(node.data)
+// WithSyncPool creates a tree option to use a sync.Pool to reuse nodes to
+// reduce pressure on the garbage collector. It may improve performance for
+// trees with lots of updates. The option holds an instance of a sync.Pool that
+// may be used by multiple trees in multiple go routines in a safe manner.
+func WithSyncPool[K any, V any]() TreeOption[K, V] {
+	nodePool := newNodePool[K, V]()
+	return func(tree *Tree[K, V]) {
+		tree.nodePool = nodePool
 	}
-
-	// Clear pointers to avoid GC memory leaks.
-	node.link[directionLeft] = nil
-	node.link[directionRight] = nil
-	node.data = nil
-
-	// Clear balance before putting node in pool.
-	node.balance = 0
-	nodePool.Put(node)
 }
 
-// *** node: Rotations ***
+/******************************************************************************
+ * Node
+ *****************************************************************************/
+
+type node[K any, V any] struct {
+	link    [2]*node[K, V] //Left and right links.
+	balance int            // Balance factor
+	key     K
+	value   V
+}
 
 // Two way single rotation
-func (root *node) single(dir direction) *node {
+func (root *node[K, V]) singleRotation(dir direction) *node[K, V] {
 	odir := dir.other()
 	save := root.link[odir]
 	root.link[odir] = save.link[dir]
@@ -657,7 +613,7 @@ func (root *node) single(dir direction) *node {
 }
 
 // Two way double rotation.
-func (root *node) double(dir direction) *node {
+func (root *node[K, V]) doubleRotation(dir direction) *node[K, V] {
 	odir := dir.other()
 	save := root.link[odir].link[dir]
 	root.link[odir].link[dir] = save.link[odir]
@@ -671,7 +627,7 @@ func (root *node) double(dir direction) *node {
 }
 
 // Adjust balance before double rotation.
-func (root *node) adjustBalance(dir direction, bal int) {
+func (root *node[K, V]) adjustBalance(dir direction, bal int) {
 	n1 := root.link[dir]
 	n2 := n1.link[dir.other()]
 
@@ -690,46 +646,97 @@ func (root *node) adjustBalance(dir direction, bal int) {
 }
 
 // Rebalance after insertion.
-func (root *node) insertBalance(dir direction) *node {
+func (root *node[K, V]) insertBalance(dir direction) *node[K, V] {
 	n := root.link[dir]
 	bal := dir.balance()
 
 	if n.balance == bal {
 		root.balance, n.balance = 0, 0
-		root = root.single(dir.other())
+		root = root.singleRotation(dir.other())
 	} else {
 		// n.balance == -bal
 		root.adjustBalance(dir, bal)
-		root = root.double(dir.other())
+		root = root.doubleRotation(dir.other())
 	}
 
 	return root
 }
 
 // Rebalance after deletion.
-func (root *node) removeBalance(dir direction) (rnode *node, done bool) {
+func (root *node[K, V]) removeBalance(dir direction) (rnode *node[K, V], done bool) {
 	n := root.link[dir.other()]
 	bal := dir.balance()
 
 	if n.balance == -bal {
 		root.balance = 0
 		n.balance = 0
-		root = root.single(dir)
+		root = root.singleRotation(dir)
 	} else if n.balance == bal {
 		root.adjustBalance(dir.other(), -bal)
-		root = root.double(dir)
+		root = root.doubleRotation(dir)
 	} else {
 		// n.balance == 0
 		root.balance = -bal
 		n.balance = bal
-		root = root.single(dir)
+		root = root.singleRotation(dir)
 		done = true
 	}
 
 	return root, done
 }
 
-// *** Misc ***
+/******************************************************************************
+ * Node pool
+ *****************************************************************************/
+
+// A type safe wrapper around sync.Pool.
+type nodePool[K any, V any] struct {
+	pool sync.Pool
+}
+
+// newNodePool allocates a new node pool holding nodes with keys of type K and
+// values of type V.
+func newNodePool[K any, V any]() *nodePool[K, V] {
+	return &nodePool[K, V]{pool: sync.Pool{New: func() any { return new(node[K, V]) }}}
+}
+
+// Get node from pool. The pool may be nil in which case a normal allocation is
+// performed.
+func (pool *nodePool[K, V]) get() *node[K, V] {
+	if pool != nil {
+		return pool.pool.Get().(*node[K, V])
+	}
+	return &node[K, V]{}
+}
+
+// Return node to pool. The pool may be nil in which case the release function
+// is called but no other action is performed.
+func (pool *nodePool[K, V]) put(node *node[K, V], release func(K, V)) {
+	if release != nil {
+		release(node.key, node.value)
+	}
+
+	if pool != nil {
+		// Clear pointers to avoid GC memory leaks as the node will be put in a
+		// pool for reuse. Unless this is done this reachable object may keep
+		// other objects alive which could otherwise be garbage collected.
+		node.link[directionLeft] = nil
+		node.link[directionRight] = nil
+
+		// Keys and values can also be or contain pointers.
+		node.key, _ = zeroValue[K]()
+		node.value, _ = zeroValue[V]()
+
+		// Clear balance before putting node in pool.
+		node.balance = 0
+
+		pool.pool.Put(node)
+	}
+}
+
+/******************************************************************************
+ * Miscellaneous
+ *****************************************************************************/
 
 // direction select left or right node links.
 type direction int8
@@ -757,23 +764,17 @@ func (dir direction) inverseBalance() int {
 	return +1
 }
 
-func directionFromBool(b bool) direction {
+func directionOfBool(b bool) direction {
 	if b {
 		return directionRight
 	}
 	return directionLeft
 }
 
-func iabs(i int) int {
-	if i < 0 {
-		return -i
-	}
-	return i
+func zeroValue[V any]() (v V, ok bool) {
+	return
 }
 
-func imax(i, j int) int {
-	if i > j {
-		return i
-	}
-	return j
+func zeroAssoc[K any, V any]() (k K, v V, ok bool) {
+	return
 }

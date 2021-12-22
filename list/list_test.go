@@ -1,140 +1,148 @@
 package list_test
 
 import (
-	"github.com/johan-bolmsjo/gods/list"
+	"fmt"
 	"testing"
+
+	"github.com/johan-bolmsjo/gods/v2/list"
 )
 
-type link struct {
-	next, prev *list.Elem
+type link[T any] struct {
+	next, prev *list.Node[T]
 }
 
-func value(e *list.Elem) interface{} {
+func valueOfNode[T any](e *list.Node[T]) any {
 	if e == nil {
 		return "nil"
 	}
 	return e.Value
 }
 
-func checkLinks(t *testing.T, e *list.Elem, l []link) {
-	for i, v := range l {
-		if e.Next() != v.next {
+func checkLinks[T any](t *testing.T, head *list.Node[T], order []link[T]) {
+	node := head
+	for i, v := range order {
+		if node.Next() != v.next {
 			t.Fatalf("expected next node of %v (index %d) to be %v; got %v",
-				value(e), i, value(v.next), value(e.Next()))
+				valueOfNode(node), i, valueOfNode(v.next), valueOfNode(node.Next()))
 		}
-		if e.Prev() != v.prev {
+		if node.Prev() != v.prev {
 			t.Fatalf("expected previous node of %v (index %d) to be %v; got %v",
-				value(e), i, value(v.prev), value(e.Prev()))
+				valueOfNode(node), i, valueOfNode(v.prev), valueOfNode(node.Prev()))
 		}
-		e = e.Next()
+		node = node.Next()
 	}
 }
 
 func TestLinkNext(t *testing.T) {
-	var e [5]*list.Elem
-	for i, _ := range e {
-		e[i] = list.New(i)
+	var nodes [5]*list.Node[int]
+	for i := range nodes {
+		nodes[i] = list.New[int]()
+		nodes[i].Value = i
 	}
 
-	// Link elements form a list
-	h1 := e[0]
-	h1.LinkNext(e[1])
-	h1.LinkNext(e[2])
+	// Link nodes to form a list
+	head1 := nodes[0]
+	head1.LinkNext(nodes[1])
+	head1.LinkNext(nodes[2])
 
-	// Link two multi element lists together
-	h2 := e[3]
-	h2.LinkNext(e[4])
-	h1.LinkNext(h2)
+	// Link two multi node lists together
+	head2 := nodes[3]
+	head2.LinkNext(nodes[4])
+	head1.LinkNext(head2)
 
-	// Expected element order [0, 3, 4, 2, 1]
-	checkLinks(t, h1, []link{
-		link{e[3], e[1]},
-		link{e[4], e[0]},
-		link{e[2], e[3]},
-		link{e[1], e[4]},
-		link{e[0], e[2]},
+	// Expected list node order [0, 3, 4, 2, 1]
+	checkLinks(t, head1, []link[int]{
+		{nodes[3], nodes[1]},
+		{nodes[4], nodes[0]},
+		{nodes[2], nodes[3]},
+		{nodes[1], nodes[4]},
+		{nodes[0], nodes[2]},
 	})
 }
 
 func TestLinkPrev(t *testing.T) {
-	var e [5]*list.Elem
-	for i, _ := range e {
-		e[i] = list.New(i)
+	var nodes [5]*list.Node[int]
+	for i := range nodes {
+		nodes[i] = list.New[int]()
+		nodes[i].Value = i
 	}
 
-	// Link elements form a list
-	h1 := e[0]
-	h1.LinkPrev(e[1])
-	h1.LinkPrev(e[2])
+	// Link node to form a list
+	head1 := nodes[0]
+	head1.LinkPrev(nodes[1])
+	head1.LinkPrev(nodes[2])
 
-	// Link two multi element lists together
-	h2 := e[3]
-	h2.LinkPrev(e[4])
-	h1.LinkPrev(h2)
+	// Link two multi node lists together
+	head2 := nodes[3]
+	head2.LinkPrev(nodes[4])
+	head1.LinkPrev(head2)
 
-	// Expected element order [0, 1, 2, 3, 4]
-	checkLinks(t, h1, []link{
-		link{e[1], e[4]},
-		link{e[2], e[0]},
-		link{e[3], e[1]},
-		link{e[4], e[2]},
-		link{e[0], e[3]},
+	// Expected list node order [0, 1, 2, 3, 4]
+	checkLinks(t, head1, []link[int]{
+		{nodes[1], nodes[4]},
+		{nodes[2], nodes[0]},
+		{nodes[3], nodes[1]},
+		{nodes[4], nodes[2]},
+		{nodes[0], nodes[3]},
 	})
 }
 
 func TestUnlink(t *testing.T) {
-	var e [3]*list.Elem
-	for i, _ := range e {
-		e[i] = list.New(i)
+	var nodes [3]*list.Node[int]
+	for i := range nodes {
+		nodes[i] = list.New[int]()
+		nodes[i].Value = i
 	}
 
-	h1 := e[0]
+	head := nodes[0]
 
 	t.Run("1", func(t *testing.T) {
-		h1.LinkPrev(e[1])
-		h1.LinkPrev(e[2])
+		head.LinkPrev(nodes[1])
+		head.LinkPrev(nodes[2])
 
-		// Expected element order [0, 2]
-		e[1].Unlink()
-		checkLinks(t, h1, []link{
-			link{e[2], e[2]},
-			link{e[0], e[0]},
+		// Expected list node order [0, 2]
+		nodes[1].Unlink()
+		checkLinks(t, head, []link[int]{
+			{nodes[2], nodes[2]},
+			{nodes[0], nodes[0]},
 		})
 	})
 
 	t.Run("2", func(t *testing.T) {
-		// Test that the unlinked element point to itself
-		checkLinks(t, e[1], []link{
-			link{e[1], e[1]},
+		// Test that the unlinked node point to itself
+		checkLinks(t, nodes[1], []link[int]{
+			{nodes[1], nodes[1]},
 		})
 	})
 
-	// Remove last element
-	// Expected element order [0]
+	// Remove last node
+	// Expected list node order [0]
 	//
-	// Do it twice to make sure that unlinking an unlinked element has no effect.
+	// Do it twice to make sure that unlinking an unlinked node has no effect.
 	for i := 0; i < 2; i++ {
-		t.Run("3", func(t *testing.T) {
-			e[2].Unlink()
-			checkLinks(t, h1, []link{
-				link{e[0], e[0]},
+		t.Run(fmt.Sprintf("3/%d", i), func(t *testing.T) {
+			nodes[2].Unlink()
+			checkLinks(t, head, []link[int]{
+				{nodes[0], nodes[0]},
 			})
 		})
 	}
 }
 
 func TestIsLinked(t *testing.T) {
-	e0, e1 := list.New(0), list.New(1)
+	var node0, node1 list.Node[int]
+	node0.InitLinks().Value = 0
+	node1.InitLinks().Value = 1
 
-	if e0.IsLinked() {
+	if node0.IsLinked() {
 		t.Fatalf("e0.IsLinked() = true; want false")
 	}
 
-	e0.LinkPrev(e1)
-	if !e0.IsLinked() {
+	node0.LinkPrev(&node1)
+	if !node0.IsLinked() {
 		t.Fatalf("e0.IsLinked() = false; want true")
 	}
-	if !e1.IsLinked() {
+	if !node1.IsLinked() {
 		t.Fatalf("e1.IsLinked() = false; want true")
 	}
 }
