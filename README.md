@@ -21,6 +21,11 @@ results.
 * Iterators are internal and tree operations slow down when they are in use.
 * Iterators are automatically advanced when the node they are parked on is removed.
 
+## iter
+
+An alternative way to use iterators that is ergonomic with Go's limited form of
+while loop. It implements the scanner idiom popularized by bufio.Scanner.
+
 ## list (circular double linked list)
 
 An intrusive circular double linked list. The most useful property is that a
