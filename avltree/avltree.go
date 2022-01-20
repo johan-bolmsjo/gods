@@ -19,7 +19,7 @@ const maxTreeHeight = 48
  *****************************************************************************/
 
 // Tree is an AVL tree.
-type Tree[K any, V any] struct {
+type Tree[K, V any] struct {
 	root        *node[K, V]
 	length      int
 	nodePool    *nodePool[K, V]
@@ -31,7 +31,7 @@ type Tree[K any, V any] struct {
 // Avoid using pointer keys that are dereferenced by the compare function as
 // modifying such keys outside of the tree invalidates the ordering invariant of
 // the tree.
-func New[K any, V any](compareKeys math.Comparator[K], options ...TreeOption[K, V]) *Tree[K, V] {
+func New[K, V any](compareKeys math.Comparator[K], options ...TreeOption[K, V]) *Tree[K, V] {
 	tree := &Tree[K, V]{
 		compareKeys: compareKeys,
 	}
@@ -425,7 +425,7 @@ func (tree *Tree[K, V]) validateNode(node *node[K, V], rvBalanced, rvSorted *boo
  *****************************************************************************/
 
 // Iterator that is used to iterate over associations in a tree.
-type Iterator[K any, V any] struct {
+type Iterator[K, V any] struct {
 	listNode list.Node[*Iterator[K, V]] // List node to make it linkable to tree iterator list
 	tree     *Tree[K, V]                // Tree iterator belongs to
 	curr     *node[K, V]                // Current node
@@ -579,13 +579,13 @@ func (iter *Iterator[K, V]) buildPathNext() bool {
  * Tree Options
  *****************************************************************************/
 
-type TreeOption[K any, V any] func(*Tree[K, V])
+type TreeOption[K, V any] func(*Tree[K, V])
 
 // WithSyncPool creates a tree option to use a sync.Pool to reuse nodes to
 // reduce pressure on the garbage collector. It may improve performance for
 // trees with lots of updates. The option holds an instance of a sync.Pool that
 // may be used by multiple trees in multiple go routines in a safe manner.
-func WithSyncPool[K any, V any]() TreeOption[K, V] {
+func WithSyncPool[K, V any]() TreeOption[K, V] {
 	nodePool := newNodePool[K, V]()
 	return func(tree *Tree[K, V]) {
 		tree.nodePool = nodePool
@@ -596,7 +596,7 @@ func WithSyncPool[K any, V any]() TreeOption[K, V] {
  * Node
  *****************************************************************************/
 
-type node[K any, V any] struct {
+type node[K, V any] struct {
 	link    [2]*node[K, V] //Left and right links.
 	balance int            // Balance factor
 	key     K
@@ -690,13 +690,13 @@ func (root *node[K, V]) removeBalance(dir direction) (rnode *node[K, V], done bo
  *****************************************************************************/
 
 // A type safe wrapper around sync.Pool.
-type nodePool[K any, V any] struct {
+type nodePool[K, V any] struct {
 	pool sync.Pool
 }
 
 // newNodePool allocates a new node pool holding nodes with keys of type K and
 // values of type V.
-func newNodePool[K any, V any]() *nodePool[K, V] {
+func newNodePool[K, V any]() *nodePool[K, V] {
 	return &nodePool[K, V]{pool: sync.Pool{New: func() any { return new(node[K, V]) }}}
 }
 
@@ -775,6 +775,6 @@ func zeroValue[V any]() (v V, ok bool) {
 	return
 }
 
-func zeroAssoc[K any, V any]() (k K, v V, ok bool) {
+func zeroAssoc[K, V any]() (k K, v V, ok bool) {
 	return
 }
