@@ -1,6 +1,6 @@
 package math
 
-import "constraints"
+import "golang.org/x/exp/constraints"
 
 // Compare two items and return a value less than, equal to, or greater than
 // zero if lhs is found, respectively, to be less than, to match, or be greater
