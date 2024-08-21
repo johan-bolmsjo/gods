@@ -30,29 +30,3 @@ func TestAbsSigned(t *testing.T) {
 		}
 	}
 }
-
-func TestMinInteger(t *testing.T) {
-	testData := [][3]int{
-		{-100, 100, -100},
-		{100, -100, -100},
-		{100, 100, 100},
-	}
-	for _, td := range testData {
-		if got, want := math.MinInteger(td[0], td[1]), td[2]; got != want {
-			t.Fatalf("math.MinInteger(%d, %d) = %d; want %d", td[0], td[1], got, want)
-		}
-	}
-}
-
-func TestMaxInteger(t *testing.T) {
-	testData := [][3]int{
-		{-100, 100, 100},
-		{100, -100, 100},
-		{100, 100, 100},
-	}
-	for _, td := range testData {
-		if got, want := math.MaxInteger(td[0], td[1]), td[2]; got != want {
-			t.Fatalf("math.MaxInteger(%d, %d) = %d; want %d", td[0], td[1], got, want)
-		}
-	}
-}

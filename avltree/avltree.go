@@ -4,15 +4,32 @@
 package avltree
 
 import (
+	"iter"
 	"sync"
 
-	"github.com/johan-bolmsjo/gods/v2/list"
 	"github.com/johan-bolmsjo/gods/v2/math"
 )
 
 // Maximum tree height supported by a tree.
 // This is a *large* tree, larger than reasonable.
 const maxTreeHeight = 48
+
+/******************************************************************************
+ * Tree Options
+ *****************************************************************************/
+
+type TreeOption[K, V any] func(*Tree[K, V])
+
+// WithSyncPool creates a tree option to use a sync.Pool to reuse nodes to
+// reduce pressure on the garbage collector. It may improve performance for
+// trees with lots of updates. The option holds an instance of a sync.Pool that
+// may be used by multiple trees in multiple go routines in a safe manner.
+func WithSyncPool[K, V any]() TreeOption[K, V] {
+	nodePool := newNodePool[K, V]()
+	return func(tree *Tree[K, V]) {
+		tree.nodePool = nodePool
+	}
+}
 
 /******************************************************************************
  * Tree
@@ -24,7 +41,7 @@ type Tree[K, V any] struct {
 	length      int
 	nodePool    *nodePool[K, V]
 	compareKeys math.Comparator[K]
-	iters       list.Node[*Iterator[K, V]]
+	generation  uint64 // Generation of tree mutation (used for iterator invalidation)
 }
 
 // New creates an AVL tree using the supplied compare function and tree options.
@@ -38,7 +55,6 @@ func New[K, V any](compareKeys math.Comparator[K], options ...TreeOption[K, V]) 
 	for _, option := range options {
 		option(tree)
 	}
-	tree.iters.InitLinks()
 	return tree
 }
 
@@ -51,6 +67,7 @@ func (tree *Tree[K, V]) Add(key K, value V) {
 		tree.root.key = key
 		tree.root.value = value
 		tree.length++
+		tree.generation++
 		return
 	}
 
@@ -108,13 +125,8 @@ func (tree *Tree[K, V]) Add(key K, value V) {
 		t.link[directionOfBool(q == t.link[directionRight])] = s
 	}
 
-	// Mark all iterators for path update
-	for e := tree.iters.Next(); e != &tree.iters; e = e.Next() {
-		iter := e.Value
-		iter.update = true
-	}
-
 	tree.length++
+	tree.generation++
 }
 
 // Remove any association with key from tree.
@@ -206,32 +218,14 @@ func (tree *Tree[K, V]) Remove(key K) {
 		}
 	}
 
-	// Update iterators
-	for e := tree.iters.Next(); e != &tree.iters; e = e.Next() {
-		iter := e.Value
-
-		// All iterators need their path updated
-		iter.update = true
-
-		// Iterators positioned on the removed node need update performed now
-		if iter.curr == curr {
-			iter.update = false
-			if !iter.buildPathNext() {
-				// This one fell of the edge
-				e = e.Prev()
-				iter.Close()
-			}
-		}
-	}
-
 	tree.nodePool.put(curr, nil)
 	tree.length--
+	tree.generation++
 }
 
-// Clear removes all associations from the tree and invalidates all iterators. A
-// non-nil release function is called on each association in the tree. The
-// release function must not fail. Remove each association by itself (for
-// example by using an iterator) if it can fail and handle errors properly.
+// Clear removes all associations from the tree. A non-nil release function is called on
+// each association in the tree. The release function must not fail. Remove each
+// association by itself if the release operation can fail and handle errors properly.
 func (tree *Tree[K, V]) Clear(release func(K, V)) {
 	curr := tree.root
 
@@ -254,10 +248,7 @@ func (tree *Tree[K, V]) Clear(release func(K, V)) {
 
 	tree.root = nil
 	tree.length = 0
-
-	for tree.iters.IsLinked() {
-		tree.iters.Next().Value.Close()
-	}
+	tree.generation++
 }
 
 // Length returns the number of associations in the tree.
@@ -344,27 +335,6 @@ func (tree *Tree[K, V]) FindHighest() (K, V, bool) {
 	return tree.edgeNode(directionRight)
 }
 
-// Apply calls the supplied function for each association in the tree.
-func (tree *Tree[K, V]) Apply(f func(K, V)) {
-	iter := tree.NewIterator()
-	for k, v, ok := iter.Next(); ok; k, v, ok = iter.Next() {
-		f(k, v)
-	}
-}
-
-// NewIterator creates an iterator that advances from low to high key values.
-// Make sure to close the iterator by calling its Close method when done.
-func (tree *Tree[K, V]) NewIterator() *Iterator[K, V] {
-	return tree.iterator(directionRight)
-}
-
-// NewReverseIterator creates an iterator that advances from high to low key
-// values. Make sure to close the iterator by calling its Close method when
-// done.
-func (tree *Tree[K, V]) NewReverseIterator() *Iterator[K, V] {
-	return tree.iterator(directionLeft)
-}
-
 func (tree *Tree[K, V]) edgeNode(dir direction) (K, V, bool) {
 	node := tree.root
 	if node == nil {
@@ -374,16 +344,6 @@ func (tree *Tree[K, V]) edgeNode(dir direction) (K, V, bool) {
 		node = node.link[dir]
 	}
 	return node.key, node.value, true
-}
-
-func (tree *Tree[K, V]) iterator(dir direction) *Iterator[K, V] {
-	iter := &Iterator[K, V]{tree: tree, dir: dir}
-	iter.listNode.InitLinks().Value = iter
-
-	if iter.buildPathStart() {
-		tree.iters.LinkNext(&iter.listNode)
-	}
-	return iter
 }
 
 // Validate tree invariants. A valid tree should always be balanced and sorted.
@@ -417,179 +377,59 @@ func (tree *Tree[K, V]) validateNode(node *node[K, V], rvBalanced, rvSorted *boo
 		*rvBalanced = false
 	}
 
-	return math.MaxInteger(depthLink[directionLeft], depthLink[directionRight])
+	return max(depthLink[directionLeft], depthLink[directionRight])
 }
 
 /******************************************************************************
  * Iterator
  *****************************************************************************/
 
-// Iterator that is used to iterate over associations in a tree.
-type Iterator[K, V any] struct {
-	listNode list.Node[*Iterator[K, V]] // List node to make it linkable to tree iterator list
-	tree     *Tree[K, V]                // Tree iterator belongs to
-	curr     *node[K, V]                // Current node
-	path     [maxTreeHeight]*node[K, V] // Traversal path
-	top      int                        // Top of stack
-	dir      direction                  // Direction of movement
-	update   bool                       // Update path before moving
-}
-
-// Next returns the next association from the iterator. The zero values of K and
-// V and false is returned if the iterator is not positioned on any association
-// (such as when all associations has been visited). Close has been called when
-// false is returned.
-func (iter *Iterator[K, V]) Next() (K, V, bool) {
-	if !iter.listNode.IsLinked() {
-		return zeroAssoc[K, V]()
-	}
-
-	if iter.update {
-		iter.buildPathCurr()
-		iter.update = false
-	}
-
-	key, value := iter.curr.key, iter.curr.value
-	if !iter.advance() {
-		iter.Close()
-	}
-	return key, value, true
-}
-
-// Close invalidates the iterator and removes its reference from the tree it's
-// associated with. It's safe to call the Next method on closed iterators.
-func (iter *Iterator[K, V]) Close() {
-	iter.listNode.Unlink()
-
-	// Clear pointers to avoid GC memory leaks.
-	iter.tree = nil
-	iter.curr = nil
-	for i := range iter.path {
-		iter.path[i] = nil
-	}
-}
-
-// Move iterator according to its recorded direction and report whether it fell
-// over the edge.
-func (iter *Iterator[K, V]) advance() bool {
-	dir := iter.dir
-
-	if iter.curr.link[dir] != nil {
-		// Continue down this branch
-		iter.path[iter.top] = iter.curr
-		iter.curr = iter.curr.link[dir]
-		iter.top++
-
-		for iter.curr.link[dir.other()] != nil {
-			iter.path[iter.top] = iter.curr
-			iter.curr = iter.curr.link[dir.other()]
-			iter.top++
-		}
-	} else {
-		// Move to the next branch
-		var last *node[K, V]
-
-		for {
-			if iter.top == 0 {
-				iter.curr = nil
-				break
-			}
-
-			iter.top--
-			last = iter.curr
-			iter.curr = iter.path[iter.top]
-
-			if last != iter.curr.link[dir] {
-				break
-			}
+// All returns a "left to right" iterator over the tree. Any tree mutation while
+// iterating, except for updating the value of an existing association, invalidates the
+// iterator and iteration terminates prematurely.
+func (tree *Tree[K, V]) All() iter.Seq2[K, V] {
+	return func(yield func(K, V) bool) {
+		if tree.root != nil {
+			tree.allRecurse(yield, tree.root, tree.generation)
 		}
 	}
-
-	return iter.curr != nil
 }
 
-// Build path to first or last association depending on iterator direction and
-// report if it was successful.
-func (iter *Iterator[K, V]) buildPathStart() bool {
-	dir := iter.dir.other()
+func (tree *Tree[K, V]) allRecurse(yield func(K, V) bool, node *node[K, V], startGeneration uint64) bool {
+	if child := node.link[directionLeft]; child != nil && !tree.allRecurse(yield, child, startGeneration) {
+		return false
+	}
+	if tree.generation != startGeneration || !yield(node.key, node.value) {
+		return false
+	}
+	if child := node.link[directionRight]; child != nil && !tree.allRecurse(yield, child, startGeneration) {
+		return false
+	}
+	return true
+}
 
-	iter.curr = iter.tree.root
-	iter.top = 0
-
-	if iter.curr != nil {
-		for iter.curr.link[dir] != nil {
-			iter.path[iter.top] = iter.curr
-			iter.curr = iter.curr.link[dir]
-			iter.top++
+// Backward returns a "right to left" iterator over the tree. Any tree mutation while
+// iterating, except for updating the value of an existing association, invalidates the
+// iterator and iteration terminates prematurely.
+func (tree *Tree[K, V]) Backward() iter.Seq2[K, V] {
+	return func(yield func(K, V) bool) {
+		if tree.root != nil {
+			tree.backwardRecurse(yield, tree.root, tree.generation)
 		}
-		return true
-	}
-	return false
-}
-
-// Build path to current node (should always be in tree).
-func (iter *Iterator[K, V]) buildPathCurr() {
-	tree := iter.tree
-	key := iter.curr.key
-
-	iter.curr = tree.root
-	iter.top = 0
-
-	for cmp := tree.compareKeys(iter.curr.key, key); cmp != 0; cmp = tree.compareKeys(iter.curr.key, key) {
-		iter.path[iter.top] = iter.curr
-		iter.curr = iter.curr.link[directionOfBool(cmp < 0)]
-		iter.top++
 	}
 }
 
-// Build path to node next to current node and report whether it fell over the
-// edge.
-func (iter *Iterator[K, V]) buildPathNext() bool {
-	tree := iter.tree
-	key := iter.curr.key
-
-	var match *node[K, V]
-
-	iter.curr = tree.root
-	iter.top = 0
-
-	for iter.curr != nil {
-		dir := directionOfBool(tree.compareKeys(iter.curr.key, key) < 0)
-		if dir != iter.dir {
-			// This node matched the direction criteria.
-			match = iter.curr
-		}
-		iter.path[iter.top] = iter.curr
-		iter.curr = iter.curr.link[dir]
-		iter.top++
+func (tree *Tree[K, V]) backwardRecurse(yield func(K, V) bool, node *node[K, V], startGeneration uint64) bool {
+	if child := node.link[directionRight]; child != nil && !tree.backwardRecurse(yield, child, startGeneration) {
+		return false
 	}
-
-	if match != nil {
-		// Wind back path to best match.
-		for iter.curr != match {
-			iter.top--
-			iter.curr = iter.path[iter.top]
-		}
-		return true
+	if tree.generation != startGeneration || !yield(node.key, node.value) {
+		return false
 	}
-	return false
-}
-
-/******************************************************************************
- * Tree Options
- *****************************************************************************/
-
-type TreeOption[K, V any] func(*Tree[K, V])
-
-// WithSyncPool creates a tree option to use a sync.Pool to reuse nodes to
-// reduce pressure on the garbage collector. It may improve performance for
-// trees with lots of updates. The option holds an instance of a sync.Pool that
-// may be used by multiple trees in multiple go routines in a safe manner.
-func WithSyncPool[K, V any]() TreeOption[K, V] {
-	nodePool := newNodePool[K, V]()
-	return func(tree *Tree[K, V]) {
-		tree.nodePool = nodePool
+	if child := node.link[directionLeft]; child != nil && !tree.backwardRecurse(yield, child, startGeneration) {
+		return false
 	}
+	return true
 }
 
 /******************************************************************************

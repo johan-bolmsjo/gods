@@ -26,19 +26,3 @@ func AbsSigned[T constraints.Signed](val T) T {
 	}
 	return val
 }
-
-// MinInteger returns the lowest of two integer values.
-func MinInteger[T constraints.Integer](lhs, rhs T) T {
-	if lhs < rhs {
-		return lhs
-	}
-	return rhs
-}
-
-// MaxInteger returns the highest of two integer values.
-func MaxInteger[T constraints.Integer](lhs, rhs T) T {
-	if lhs > rhs {
-		return lhs
-	}
-	return rhs
-}
