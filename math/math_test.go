@@ -3,7 +3,7 @@ package math_test
 import (
 	"testing"
 
-	"github.com/johan-bolmsjo/gods/v2/math"
+	"github.com/johan-bolmsjo/gods/v3/math"
 )
 
 func TestCompareOrdered(t *testing.T) {

@@ -5,8 +5,8 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/johan-bolmsjo/gods/v2/avltree"
-	"github.com/johan-bolmsjo/gods/v2/math"
+	"github.com/johan-bolmsjo/gods/v3/avltree"
+	"github.com/johan-bolmsjo/gods/v3/math"
 )
 
 type keyType int

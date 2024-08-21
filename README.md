@@ -2,12 +2,12 @@
 
 Go Data Structures, version 3.
 
+Compared to version 2, the APIs has been revised to use the Go 1.23
+iterators. The math MinInteger and MaxInteger functions has been
+removed. Use the built-in min and max functions instead.
+
 Compared to version 1, the APIs has been revised to take advantage of
 generic data types introduced in Go 1.18.
-
-Compared to version 2, the APIs has been revised to use the iterator API
-introduced in Go 1.23. The math MinInteger and MaxInteger functions has
-been removed. Use the built-in min and max functions instead.
 
 ## avltree
 

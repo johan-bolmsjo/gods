@@ -7,7 +7,7 @@ import (
 	"iter"
 	"sync"
 
-	"github.com/johan-bolmsjo/gods/v2/math"
+	"github.com/johan-bolmsjo/gods/v3/math"
 )
 
 // Maximum tree height supported by a tree.

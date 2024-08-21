@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/johan-bolmsjo/gods/v2/list"
+	"github.com/johan-bolmsjo/gods/v3/list"
 )
 
 type link[T any] struct {
