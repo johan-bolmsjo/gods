@@ -7,7 +7,7 @@ import (
 	"iter"
 	"sync"
 
-	"github.com/johan-bolmsjo/gods/v3/math"
+	"github.com/johan-bolmsjo/gods/v4/math"
 )
 
 // Maximum tree height supported by a tree.
@@ -20,10 +20,10 @@ const maxTreeHeight = 48
 
 type TreeOption[K, V any] func(*Tree[K, V])
 
-// WithSyncPool creates a tree option to use a sync.Pool to reuse nodes to
-// reduce pressure on the garbage collector. It may improve performance for
-// trees with lots of updates. The option holds an instance of a sync.Pool that
-// may be used by multiple trees in multiple go routines in a safe manner.
+// WithSyncPool creates a tree option to use a sync.Pool to reuse tree nodes to
+// reduce garbage collector activity. It may improve performance for trees with
+// frequent updates. The option holds an instance of a sync.Pool that may be
+// used by multiple trees in multiple go routines in a safe manner.
 func WithSyncPool[K, V any]() TreeOption[K, V] {
 	nodePool := newNodePool[K, V]()
 	return func(tree *Tree[K, V]) {
@@ -58,8 +58,7 @@ func New[K, V any](compareKeys math.Comparator[K], options ...TreeOption[K, V]) 
 	return tree
 }
 
-// Add association between key and value to the tree. Any existing association
-// for key is overwritten with key and value.
+// Add association between key and value to the tree. Any existing association is overwritten.
 func (tree *Tree[K, V]) Add(key K, value V) {
 	// Empty tree case
 	if tree.root == nil {
@@ -218,15 +217,13 @@ func (tree *Tree[K, V]) Remove(key K) {
 		}
 	}
 
-	tree.nodePool.put(curr, nil)
+	tree.nodePool.put(curr)
 	tree.length--
 	tree.generation++
 }
 
-// Clear removes all associations from the tree. A non-nil release function is called on
-// each association in the tree. The release function must not fail. Remove each
-// association by itself if the release operation can fail and handle errors properly.
-func (tree *Tree[K, V]) Clear(release func(K, V)) {
+// Clear removes all associations from the tree.
+func (tree *Tree[K, V]) Clear() {
 	curr := tree.root
 
 	// Destruction by rotation
@@ -236,7 +233,7 @@ func (tree *Tree[K, V]) Clear(release func(K, V)) {
 		if curr.link[directionLeft] == nil {
 			// Remove node
 			save = curr.link[directionRight]
-			tree.nodePool.put(curr, release)
+			tree.nodePool.put(curr)
 		} else {
 			// Rotate right
 			save = curr.link[directionLeft]
@@ -323,15 +320,17 @@ func (tree *Tree[K, V]) FindEqualOrGreater(key K) (K, V, bool) {
 	return zeroAssoc[K, V]()
 }
 
-// FindLowest returns the association with the lowest key and true. The zero value
-// of K and V and false is returned if the tree is empty.
-func (tree *Tree[K, V]) FindLowest() (K, V, bool) {
+// First returns the association with the lowest key value according to the key
+// compare function and true. The zero value of K and V and false is returned if
+// the tree is empty.
+func (tree *Tree[K, V]) First() (K, V, bool) {
 	return tree.edgeNode(directionLeft)
 }
 
-// FindHighest returns the association with the highest key and true. The zero value
-// of K and V and false is returned if the tree is empty.
-func (tree *Tree[K, V]) FindHighest() (K, V, bool) {
+// Last returns the association with the highest key value according to the key
+// compare function and true. The zero value of K and V and false is returned if
+// the tree is empty.
+func (tree *Tree[K, V]) Last() (K, V, bool) {
 	return tree.edgeNode(directionRight)
 }
 
@@ -346,18 +345,19 @@ func (tree *Tree[K, V]) edgeNode(dir direction) (K, V, bool) {
 	return node.key, node.value, true
 }
 
-// Validate tree invariants. A valid tree should always be balanced and sorted.
-func (tree *Tree[K, V]) Validate() (balanced, sorted bool) {
+// Validate tree invariants. A valid tree is always balanced and ordered.
+// This method is provided for testing and debugging purposes.
+func (tree *Tree[K, V]) Validate() (balanced, ordered bool) {
 	balanced = true
-	sorted = true
+	ordered = true
 
 	if tree.root != nil {
-		tree.validateNode(tree.root, &balanced, &sorted, 0)
+		tree.validateNode(tree.root, &balanced, &ordered, 0)
 	}
 	return
 }
 
-func (tree *Tree[K, V]) validateNode(node *node[K, V], rvBalanced, rvSorted *bool, depth int) int {
+func (tree *Tree[K, V]) validateNode(node *node[K, V], rvBalanced, rvOrdered *bool, depth int) int {
 	depth++
 	var depthLink [2]int
 
@@ -367,9 +367,9 @@ func (tree *Tree[K, V]) validateNode(node *node[K, V], rvBalanced, rvSorted *boo
 		if node.link[dir] != nil {
 			cmp := tree.compareKeys(node.link[dir].key, node.key)
 			if dir == directionOfBool(cmp < 0) {
-				*rvSorted = false
+				*rvOrdered = false
 			}
-			depthLink[dir] = tree.validateNode(node.link[dir], rvBalanced, rvSorted, depth)
+			depthLink[dir] = tree.validateNode(node.link[dir], rvBalanced, rvOrdered, depth)
 		}
 	}
 
@@ -384,9 +384,9 @@ func (tree *Tree[K, V]) validateNode(node *node[K, V], rvBalanced, rvSorted *boo
  * Iterator
  *****************************************************************************/
 
-// All returns a "left to right" iterator over the tree. Any tree mutation while
-// iterating, except for updating the value of an existing association, invalidates the
-// iterator and iteration terminates prematurely.
+// All returns an iterator visiting associations in lowest to highest key order.
+// Any tree mutation while iterating, except for updating the value of an
+// existing association, invalidates the iterator and iteration is aborted.
 func (tree *Tree[K, V]) All() iter.Seq2[K, V] {
 	return func(yield func(K, V) bool) {
 		if tree.root != nil {
@@ -408,9 +408,9 @@ func (tree *Tree[K, V]) allRecurse(yield func(K, V) bool, node *node[K, V], star
 	return true
 }
 
-// Backward returns a "right to left" iterator over the tree. Any tree mutation while
-// iterating, except for updating the value of an existing association, invalidates the
-// iterator and iteration terminates prematurely.
+// Backward returns an iterator visiting associations in highest to lowest key
+// order. Any tree mutation while iterating, except for updating the value of an
+// existing association, invalidates the iterator and iteration is aborted.
 func (tree *Tree[K, V]) Backward() iter.Seq2[K, V] {
 	return func(yield func(K, V) bool) {
 		if tree.root != nil {
@@ -471,13 +471,14 @@ func (root *node[K, V]) adjustBalance(dir direction, bal int) {
 	n1 := root.link[dir]
 	n2 := n1.link[dir.other()]
 
-	if n2.balance == 0 {
+	switch n2.balance {
+	case 0:
 		root.balance = 0
 		n1.balance = 0
-	} else if n2.balance == bal {
+	case bal:
 		root.balance = -bal
 		n1.balance = 0
-	} else {
+	default:
 		// n2.balance == -bal
 		root.balance = 0
 		n1.balance = bal
@@ -507,14 +508,15 @@ func (root *node[K, V]) removeBalance(dir direction) (rnode *node[K, V], done bo
 	n := root.link[dir.other()]
 	bal := dir.balance()
 
-	if n.balance == -bal {
+	switch n.balance {
+	case -bal:
 		root.balance = 0
 		n.balance = 0
 		root = root.singleRotation(dir)
-	} else if n.balance == bal {
+	case bal:
 		root.adjustBalance(dir.other(), -bal)
 		root = root.doubleRotation(dir)
-	} else {
+	default:
 		// n.balance == 0
 		root.balance = -bal
 		n.balance = bal
@@ -551,27 +553,23 @@ func (pool *nodePool[K, V]) get() *node[K, V] {
 
 // Return node to pool. The pool may be nil in which case the release function
 // is called but no other action is performed.
-func (pool *nodePool[K, V]) put(node *node[K, V], release func(K, V)) {
-	if release != nil {
-		release(node.key, node.value)
+func (pool *nodePool[K, V]) put(node *node[K, V]) {
+	if pool == nil {
+		return
 	}
+	// Clear pointers to avoid GC memory leaks as the node will be put in a
+	// pool for reuse. Unless this is done this reachable object may keep
+	// other objects alive which could otherwise be garbage collected.
+	node.link[directionLeft] = nil
+	node.link[directionRight] = nil
 
-	if pool != nil {
-		// Clear pointers to avoid GC memory leaks as the node will be put in a
-		// pool for reuse. Unless this is done this reachable object may keep
-		// other objects alive which could otherwise be garbage collected.
-		node.link[directionLeft] = nil
-		node.link[directionRight] = nil
+	node.balance = 0
 
-		// Keys and values can also be or contain pointers.
-		node.key, _ = zeroValue[K]()
-		node.value, _ = zeroValue[V]()
+	// Keys and values can also be or contain pointers.
+	node.key, _ = zeroValue[K]()
+	node.value, _ = zeroValue[V]()
 
-		// Clear balance before putting node in pool.
-		node.balance = 0
-
-		pool.pool.Put(node)
-	}
+	pool.pool.Put(node)
 }
 
 /******************************************************************************

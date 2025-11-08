@@ -1,6 +1,11 @@
 # GoDS
 
-Go Data Structures, version 3.
+Go Data Structures, version 4.
+
+Compared to version 3, the AVL tree API has minor changes. The Clear
+method no longer accepts a release function as it had limitations in
+that it was not allowed to fail. The FindLowest and FindHighest methods
+are renamed to First and Last respectively.
 
 Compared to version 2, the APIs has been revised to use the Go 1.23
 iterators. The math MinInteger and MaxInteger functions has been

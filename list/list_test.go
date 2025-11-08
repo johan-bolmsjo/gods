@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/johan-bolmsjo/gods/v3/list"
+	"github.com/johan-bolmsjo/gods/v4/list"
 )
 
 type link[T any] struct {
@@ -119,7 +119,7 @@ func TestUnlink(t *testing.T) {
 	// Expected list node order [0]
 	//
 	// Do it twice to make sure that unlinking an unlinked node has no effect.
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		t.Run(fmt.Sprintf("3/%d", i), func(t *testing.T) {
 			nodes[2].Unlink()
 			checkLinks(t, head, []link[int]{

@@ -5,8 +5,8 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/johan-bolmsjo/gods/v3/avltree"
-	"github.com/johan-bolmsjo/gods/v3/math"
+	"github.com/johan-bolmsjo/gods/v4/avltree"
+	"github.com/johan-bolmsjo/gods/v4/math"
 )
 
 type keyType int
@@ -29,18 +29,18 @@ func TestInvariantsPermuteInsert(t *testing.T) {
 
 	seq := 0
 	for permute(&dst, &src, seq) {
-		for j := 0; j < alen; j++ {
+		for j := range alen {
 			key := dst[j]
 			tree.Add(key, valType(key))
 			if _, ok := tree.Find(key); !ok {
 				t.Fatalf("Failed to add key=%v, index=%v, sequence=%v", key, j, seq)
 			}
-			balanced, sorted := tree.Validate()
-			if !balanced || !sorted {
-				t.Fatalf("Invalid tree invariant: balanced=%v, sorted=%v, equence=%v", balanced, sorted, dst)
+			balanced, ordered := tree.Validate()
+			if !balanced || !ordered {
+				t.Fatalf("Invalid tree invariant: balanced=%v, ordered=%v, equence=%v", balanced, ordered, dst)
 			}
 		}
-		tree.Clear(nil)
+		tree.Clear()
 		seq++
 	}
 	t.Logf("%d insert sequences tested", seq)
@@ -56,7 +56,7 @@ func TestInvariantsPermuteRemove(t *testing.T) {
 
 	seq := 0
 	for permute(&dst, &src, seq) {
-		for j := 0; j < alen; j++ {
+		for j := range alen {
 			key := src[j]
 			tree.Add(key, valType(key))
 			if _, ok := tree.Find(key); !ok {
@@ -64,18 +64,18 @@ func TestInvariantsPermuteRemove(t *testing.T) {
 			}
 		}
 
-		for j := 0; j < alen; j++ {
+		for j := range alen {
 			key := dst[j]
 			tree.Remove(dst[j])
 			if _, ok := tree.Find(key); ok {
 				t.Fatalf("Failed to remove key=%v, index=%v, sequence=%v", key, j, seq)
 			}
-			balanced, sorted := tree.Validate()
-			if !balanced || !sorted {
-				t.Fatalf("Invalid tree invariant: balanced=%v, sorted=%v, sequence=%v", balanced, sorted, dst)
+			balanced, ordered := tree.Validate()
+			if !balanced || !ordered {
+				t.Fatalf("Invalid tree invariant: balanced=%v, ordered=%v, sequence=%v", balanced, ordered, dst)
 			}
 		}
-		tree.Clear(nil)
+		tree.Clear()
 		seq++
 	}
 	t.Logf("%d remove sequences tested", seq)
@@ -121,7 +121,7 @@ func TestRemoveFromEmptyTree(t *testing.T) {
 	}
 }
 
-// Removing a non-existing association shall have no observable effects.
+// Removing a non-existing association shall have no observable effect.
 func TestRemoveNonExisting(t *testing.T) {
 	for _, newTreeF := range newTreeFuncs {
 		want := []keyType{1, 2, 3, 5}
@@ -134,30 +134,22 @@ func TestRemoveNonExisting(t *testing.T) {
 	}
 }
 
-// Clearing a tree shall remove all associations and calling the release function
-// for each association when doing so.
+// Clearing a tree shall remove all associations.
 func TestClear(t *testing.T) {
 	for _, newTreeF := range newTreeFuncs {
-		keys := []keyType{1, 2, 3, 4, 5, 6, 7, 8, 9}
+		keys := []keyType{1, 2, 3}
 		tree := newTreeF(keys)
 
-		var released []assoc
-		tree.Clear(func(k keyType, v valType) {
-			released = append(released, assoc{k, v})
-		})
+		tree.Clear()
 
-		if !checkSequence(released, keys) {
-			t.Fatalf("unexpected release sequence %v; want %v", released, keys)
-		}
-
-		// The length should be zero.
+		// The length shall be zero.
 		if got, want := tree.Length(), 0; got != want {
 			t.Fatalf("tree.Clear: tree.Length() = %v; want %v", got, want)
 		}
 	}
 }
 
-// Length shall reflect the number of associations in a tree.
+// Length shall be equal to the number of associations.
 func TestLength(t *testing.T) {
 	for _, newTreeF := range newTreeFuncs {
 		keys := []keyType{1, 2, 3}
@@ -245,37 +237,37 @@ func TestFind(t *testing.T) {
 	}
 }
 
-// FindLowest shall return the association with the lowest key.
-func TestFindLowest(t *testing.T) {
+// First shall return the association with the lowest key value according to the key compare function.
+func TestFirst(t *testing.T) {
 	for _, newTreeF := range newTreeFuncs {
 		tree := newTreeF(nil)
-		if got, want := kvResultString(tree.FindLowest()), kvResultString(0, 0, false); got != want {
-			t.Fatalf("tree.FindLowest() = %v; want %v", got, want)
+		if got, want := kvResultString(tree.First()), kvResultString(0, 0, false); got != want {
+			t.Fatalf("tree.First() = %v; want %v", got, want)
 		}
 
 		tree = newTreeF([]keyType{1, 2, 3, 4, 5})
-		if got, want := kvResultString(tree.FindLowest()), kvResultString(1, 1, true); got != want {
-			t.Fatalf("tree.FindLowest() = %v; want %v", got, want)
+		if got, want := kvResultString(tree.First()), kvResultString(1, 1, true); got != want {
+			t.Fatalf("tree.First() = %v; want %v", got, want)
 		}
 	}
 }
 
-// FindHighest shall return the association with the highest key.
-func TestFindHighest(t *testing.T) {
+// Last shall return the association with the highest key value according to the key compare function.
+func TestLast(t *testing.T) {
 	for _, newTreeF := range newTreeFuncs {
 		tree := newTreeF(nil)
-		if got, want := kvResultString(tree.FindHighest()), kvResultString(0, 0, false); got != want {
-			t.Fatalf("tree.FindHighest() = %v; want %v", got, want)
+		if got, want := kvResultString(tree.Last()), kvResultString(0, 0, false); got != want {
+			t.Fatalf("tree.Last() = %v; want %v", got, want)
 		}
 
 		tree = newTreeF([]keyType{1, 2, 3, 4, 5})
-		if got, want := kvResultString(tree.FindHighest()), kvResultString(5, 5, true); got != want {
-			t.Fatalf("tree.FindHighest() = %v; want %v", got, want)
+		if got, want := kvResultString(tree.Last()), kvResultString(5, 5, true); got != want {
+			t.Fatalf("tree.Last() = %v; want %v", got, want)
 		}
 	}
 }
 
-// All shall return an iterator returning elements from lowest to highest key stored in the tree.
+// All shall return an iterator returning elements from lowest to highest key value stored in the tree.
 func TestIterateAll(t *testing.T) {
 	for _, newTreeF := range newTreeFuncs {
 		keys := []keyType{0, 1, 2, 3, 4, 5, 6, 7, 8, 9}
@@ -291,7 +283,7 @@ func TestIterateAll(t *testing.T) {
 	}
 }
 
-// Backward shall return an iterator returning elements from highest to lowest key stored in the tree.
+// Backward shall return an iterator returning elements from highest to lowest key value stored in the tree.
 func TestIterateBackward(t *testing.T) {
 	for _, newTreeF := range newTreeFuncs {
 		keys := []keyType{0, 1, 2, 3, 4, 5, 6, 7, 8, 9}
@@ -328,7 +320,7 @@ func TestIterateBreak(t *testing.T) {
 	}
 }
 
-// Clear shall terminate any ongoing tree iteration.
+// Clear shall terminate tree iteration.
 func TestIterateInvalidateClear(t *testing.T) {
 	for _, newTreeF := range newTreeFuncs {
 		keys := []keyType{0, 1, 2, 3, 4, 5, 6, 7, 8, 9}
@@ -336,14 +328,11 @@ func TestIterateInvalidateClear(t *testing.T) {
 		tree := newTreeF(keys)
 
 		var assocs []assoc
-		var clearAssocs []assoc
 		for k, v := range tree.All() {
 			assocs = append(assocs, assoc{k, v})
 			if k == 5 {
 				// Iteration is terminated by modification
-				tree.Clear(func(k keyType, v valType) {
-					clearAssocs = append(clearAssocs, assoc{k, v})
-				})
+				tree.Clear()
 			}
 		}
 		if la, lw := tree.Length(), 0; la != lw {
@@ -352,16 +341,13 @@ func TestIterateInvalidateClear(t *testing.T) {
 		if !checkSequence(assocs, want) {
 			t.Fatalf("range tree.All() = %v; want %v", assocs, want)
 		}
-		if !checkSequence(clearAssocs, keys) {
-			t.Fatalf("range tree.Clear() = %v; want %v", clearAssocs, keys)
-		}
 	}
 }
 
-// Add new elements shall terminate any ongoing tree iteration.
+// Adding an associations shall terminate iteration.
 func TestIterateInvalidateAddNew(t *testing.T) {
 	for _, newTreeF := range newTreeFuncs {
-		// Test adding elements to the left and right of current tree edges.
+		// Test adding associations to the left and right of current tree edges.
 		for _, addKey := range []keyType{-1, 10} {
 			keys := []keyType{0, 1, 2, 3, 4, 5, 6, 7, 8, 9}
 			want := []keyType{0, 1, 2, 3, 4, 5}
@@ -384,7 +370,7 @@ func TestIterateInvalidateAddNew(t *testing.T) {
 	}
 }
 
-// Add in update case shall not terminate any ongoing tree iteration.
+// Updating the value of an association shall not terminate iteration.
 func TestIterateInvalidateAddUpdate(t *testing.T) {
 	for _, newTreeF := range newTreeFuncs {
 		keys := []keyType{0, 1, 2, 3, 4, 5, 6, 7, 8, 9}
@@ -404,10 +390,10 @@ func TestIterateInvalidateAddUpdate(t *testing.T) {
 	}
 }
 
-// Remove existing element shall terminate any ongoing tree iteration.
+// Removing an association shall terminate iteration.
 func TestIterateInvalidateRemoveExisting(t *testing.T) {
 	for _, newTreeF := range newTreeFuncs {
-		// Test removing left, current and right elements compared to iterator position.
+		// Test removing left, current and right associations compared to iterator position.
 		for _, removeKey := range []keyType{2, 5, 7} {
 			keys := []keyType{0, 1, 2, 3, 4, 5, 6, 7, 8, 9}
 			want := []keyType{0, 1, 2, 3, 4, 5}
@@ -430,7 +416,7 @@ func TestIterateInvalidateRemoveExisting(t *testing.T) {
 	}
 }
 
-// Remove non-existing element shall not terminate any ongoing tree iteration.
+// Request to remove non-existing association shall not terminate iteration.
 func TestIterateInvalidateRemoveNonExisting(t *testing.T) {
 	for _, newTreeF := range newTreeFuncs {
 		keys := []keyType{0, 1, 2, 3, 4, 5, 6, 7, 8, 9}
@@ -501,12 +487,6 @@ func bulkInsert(tree *treeType, keys []keyType) *treeType {
 		tree.Add(k, valType(k))
 	}
 	return tree
-}
-
-func bulkRemove(tree *treeType, keys []keyType) {
-	for _, k := range keys {
-		tree.Remove(k)
-	}
 }
 
 func collectAll(tree *treeType) (assocs []assoc) {
